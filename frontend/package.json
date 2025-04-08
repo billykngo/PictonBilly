@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "tailwindcss": "pnpm exec tailwindcss -i './src/styles/index.css' -o './src/styles/output.css' --watch"
+    "tailwindcss": "pnpm exec tailwindcss -i './src/styles/index.css' -o './src/styles/output.css' --watch",
+    "start": "pnpm dev"
   },
   "dependencies": {
     "@azure/msal-browser": "^4.4.0",

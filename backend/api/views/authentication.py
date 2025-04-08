@@ -1,4 +1,4 @@
-from django.forms import ValidationError
+from rest_framework.exceptions import ValidationError
 from django.conf import settings
 from django.contrib.auth import authenticate, login, get_user_model, logout
 from django.contrib.auth.hashers import make_password
@@ -103,64 +103,55 @@ class RegisterView(views.APIView, MethodNameMixin):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        data = request.data
+        try:
+            data = request.data
 
-        pretty_print(
-            f"Received Request from {self._get_method_name()}: {data}", "DEBUG"
-        )
-        # Validate required fields
-        required_fields = ["email", "username", "password", "firstName", "lastName"]
-        for field in required_fields:
-            if not data.get(field):
-                pretty_print(
-                    f"Encountered from {self._get_method_name()}: {field} is required",
-                    "ERROR",
-                )
-                raise ValidationError(f"{field} is required")
-
-        # Check if user already exists
-        if User.objects.filter(email=data["email"]).exists():
-            raise ValidationError("User with this email already exists")
             pretty_print(
-                f"from {self._get_method_name()}: User with this email already exists",
-                "ERROR",
-            )
-        if User.objects.filter(username=data["username"]).exists():
-            pretty_print(
-                f"from {self._get_method_name()}: User with this username already exists",
-                "ERROR",
-            )
-            raise ValidationError("User with this username already exists")
-        if (
-            data.get("phone")
-            and User.objects.filter(phone_number=data["phone"]).exists()
-        ):
-            pretty_print(
-                f"from {self._get_method_name()}: User with this phone already exists",
-                "ERROR",
+                f"Received Request from {self._get_method_name()}: {data}", "DEBUG"
             )
 
-            raise ValidationError("User with this phone already exists")
+            # Validate required fields
+            required_fields = ["email", "username", "password", "firstName", "lastName"]
+            for field in required_fields:
+                if not data.get(field):
+                    raise ValidationError(f"{field} is required")
 
-        # Checks Passed Make User
-        user = User.objects.create(
-            username=data["username"],
-            email=data["email"],
-            password=make_password(data["password"]),
-            first_name=data["firstName"],
-            last_name=data["lastName"],
-            phone_number=data.get("phone", ""),
-            role="student",  # Enforce default role for registration
-        )
+            # Check if user already exists
+            if User.objects.filter(email=data["email"]).exists():
+                raise ValidationError("User with this email already exists")
+            if User.objects.filter(username=data["username"]).exists():
+                raise ValidationError("User with this username already exists")
+            if data.get("phone") and User.objects.filter(phone_number=data["phone"]).exists():
+                raise ValidationError("User with this phone already exists")
 
-        return Response(
-            {
-                "message": "User registered successfully",
-                "user_id": user.id,
-            },
-            status=status.HTTP_201_CREATED,
-        )
+            # Create the user
+            user = User.objects.create(
+                username=data["username"],
+                email=data["email"],
+                password=make_password(data["password"]),
+                first_name=data["firstName"],
+                last_name=data["lastName"],
+                phone_number=data.get("phone", ""),
+                role="student",
+            )
 
+            return Response(
+                {
+                    "message": "User registered successfully",
+                    "user_id": user.id,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
+        except ValidationError as e:
+            # Log the error and return it in response
+            pretty_print(f"Validation error: {str(e)}", "ERROR")
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            # Catch-all for anything else
+            pretty_print(f"Unexpected error: {str(e)}", "ERROR")
+            return Response({"error": "Registration failed"}, status=status.HTTP_400_BAD_REQUEST)
 
 class AzureAuthViewSet(viewsets.ViewSet, MethodNameMixin):
     """Handle Microsoft Azure authentication"""

@@ -3,7 +3,6 @@
 import * as React from "react";
 import { useEffect, useState } from "react";
 import { Users, File } from "lucide-react";
-import { NavMain } from "@/components/sidebar-nav-main";
 import { NavUser } from "@/components/sidebar-nav-user";
 import {
   Sidebar,
