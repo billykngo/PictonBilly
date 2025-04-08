@@ -19,6 +19,18 @@ const roleConfigs = {
             permissions: ["admin.create_users"]
           }
         ]
+      },
+      {
+        title: "Form Management",
+        icon: "FileText",
+        isActive: true,
+        items: [
+          {
+            id: "manage-form-schemas",
+            title: "Manage Form Templates",
+            permissions: ["admin.manage_form_schemas"]
+          }
+        ]
       }
     ],
     dashboard: {
@@ -28,7 +40,8 @@ const roleConfigs = {
     permissions: {
       canEditUsers: true,
       canCreateUsers: true,
-      canToggleUserStatus: true
+      canToggleUserStatus: true,
+      canManageFormSchemas: true
     }
   },
 
@@ -74,11 +87,23 @@ const roleConfigs = {
           },
           // for drafts and status
           {
-            id: 'view-submissions',
-            title: "View Submissions",
+            id: 'view-forms',
+            title: "View Forms",
             permissions: ["student.view_forms"]
           }
         ],
+      },
+      {
+        title: "Account",
+        icon: "User",
+        isActive: true,
+        items: [
+          {
+            id: "profile",
+            title: "Profile Settings",
+            permissions: ["student.edit_profile"]
+          }
+        ]
       }
     ],
     dashboard: {
@@ -88,7 +113,12 @@ const roleConfigs = {
     permissions: {
       canEditUsers: false,
       canCreateUsers: false,
-      canToggleUserStatus: false
+      canToggleUserStatus: false,
+      student: {
+        submit_forms: true,
+        view_forms: true,
+        edit_profile: true
+      }
     }
   }
 }

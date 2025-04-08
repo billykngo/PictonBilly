@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import UserDataTable from "@/Pages/dashboard/Privileged/UserDataTable";
 import UserCreationForm from "@/Pages/dashboard/Privileged/UserCreationForm"
+import FormSchemaManager from "@/Pages/dashboard/Privileged/FormSchemaManager";
 import { api } from "@/api/api.js";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ToastNotification";
@@ -9,6 +10,8 @@ import { pretty_log } from "@/api/common_util"
 import { act } from "react";
 import SubmitForms from "../Student/SubmitForms";
 import ViewForms from "./ViewForms";
+import { UserProfileSettings } from "@/components/UserProfileSettings";
+import { Switch } from "@/components/ui/switch";
 
 const DashboardContent = ({ activeView, dashboardConfig }) => {
   const [data, setData] = useState([]);
@@ -21,6 +24,7 @@ const DashboardContent = ({ activeView, dashboardConfig }) => {
     canEditUsers: false,
     canCreateUsers: false,
     canToggleUsers: false,
+    canManageFormSchemas: false,
   }
 
   // Load data based on active view
@@ -32,7 +36,13 @@ const DashboardContent = ({ activeView, dashboardConfig }) => {
 
         // Check permissions before making API calls
         switch (activeView) {
+          case "profile":
+            // No data fetching needed for profile view
+            setData([]);
+            break;
+
           case "manage-users":
+
             if (!permissions.canEditUsers) {
               pretty_log("User does not have permission to manage users", "WARNING");
               setData([]);
@@ -56,41 +66,45 @@ const DashboardContent = ({ activeView, dashboardConfig }) => {
               setData([]);
               break;
             }
-
-            setData([]);
+            response = await api.admin.getUsers();
+            setData(response);
             break;
 
-          // TODO: Handle other role-specific views here
           case "submit-forms":
-            response = await api.commonAPI.checkIfSignature();
-            if (response) {
-              pretty_log(`GOT RESPONSE WITH SIGNATURE ${JSON.stringify(response, null, 4)}`, "DEBUG")
-            }
+            response = await api.student.getFormTemplates();
+            setData(response);
             break;
+
           case "view-forms":
-          case "review-forms":
-            // TODO::  Fetch appropriate data based on role
-            pretty_log(`View: ${activeView} NOT YET IMPLEMENTED`, "WARNING")
+            response = await api.student.getFormSubmissions();
+            setData(response);
+            break;
+
+          case "notifications":
             setData([]);
             break;
+
+          case "manage-form-schemas":
+            if (!permissions.canManageFormSchemas) {
+              return (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Permission Denied</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    You do not have permission to manage form templates.
+                  </CardContent>
+                </Card>
+              );
+            }
+            return <FormSchemaManager />;
 
           default:
-            // If no active view, check if we should show a default
-            const dashboard = dashboardConfig?.getDashboard();
-            if (dashboard?.defaultView && dashboard.defaultView !== activeView) {
-              pretty_log(`Active view ${activeView} doesn't match default ${dashboard.defaultView}`, "WARNING");
-            }
-
             setData([]);
-            break;
         }
       } catch (error) {
-        pretty_log(`Error fetching data for ${activeView}: ${error}`, "ERROR");
-        showToast(
-          { error: error.message || "Failed to load data" },
-          "error",
-          "Error",
-        );
+        pretty_log(`Error fetching data: ${error}`, "ERROR");
+        showToast({ error: "Failed to fetch data" }, "error");
       } finally {
         setLoading(false);
       }
@@ -99,11 +113,9 @@ const DashboardContent = ({ activeView, dashboardConfig }) => {
     fetchData();
   }, [activeView, showToast, permissions]);
 
-
   // TODO: implement in frontend API and backend
   const handleToggleStatus = async (userId) => {
     try {
-
       // check permission before allowing status toggle
       if (!permissions.canToggleUserStatus) {
         showToast(
@@ -113,7 +125,6 @@ const DashboardContent = ({ activeView, dashboardConfig }) => {
         )
         return;
       }
-
 
       await api.admin.toggleUserStatus(userId);
 
@@ -162,6 +173,39 @@ const DashboardContent = ({ activeView, dashboardConfig }) => {
     const dashboard = dashboardConfig?.getDashboard() || { title: "Dashboard" };
 
     switch (activeView) {
+      case "profile":
+        // Get user data from the config
+        const userData = dashboardConfig?.config?.user;
+        if (!userData) {
+          return (
+            <Card>
+              <CardHeader>
+                <CardTitle>Error</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p>Unable to load user data. Please try refreshing the page.</p>
+              </CardContent>
+            </Card>
+          );
+        }
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Profile Settings</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <UserProfileSettings
+                userData={userData}
+                onUpdate={(updatedData) => {
+                  if (dashboardConfig.updateUserData) {
+                    dashboardConfig.updateUserData(updatedData);
+                  }
+                }}
+              />
+            </CardContent>
+          </Card>
+        );
+
       case "manage-users":
         if (!permissions.canEditUsers) {
           return (
@@ -203,12 +247,12 @@ const DashboardContent = ({ activeView, dashboardConfig }) => {
                 <p>You do not have permission to access this page.</p>
               </CardContent>
             </Card>
-          );
+          )
         }
         return (
           <Card>
             <CardHeader>
-              <CardTitle>Create User</CardTitle>
+              <CardTitle>Create New User</CardTitle>
             </CardHeader>
             <CardContent>
               <UserCreationForm />
@@ -220,49 +264,86 @@ const DashboardContent = ({ activeView, dashboardConfig }) => {
         return (
           <Card>
             <CardHeader>
-              <CardTitle>Submit A New Form</CardTitle>
+              <CardTitle>Submit Forms</CardTitle>
             </CardHeader>
             <CardContent>
-              <SubmitForms />
+              <SubmitForms formTemplates={data} />
             </CardContent>
-
           </Card>
-        )
+        );
 
       case "view-forms":
         return (
           <Card>
             <CardHeader>
-              <CardTitle>View Your Forms</CardTitle>
+              <CardTitle>View Forms</CardTitle>
             </CardHeader>
             <CardContent>
-              <ViewForms />
-            </CardContent>
-
-          </Card>
-        )
-
-      case "review-forms":
-        return (
-          <Card>
-            <CardHeader>
-              <CardTitle>{activeView === "submit-forms" ? "Submit Forms" :
-                activeView === "view-forms" ? "View Forms" : "Review Forms"}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p>This is the {activeView} view</p>
-              <p> TODO: Build these Views </p>
+              <ViewForms submissions={data} />
             </CardContent>
           </Card>
         );
 
-      // IMPORTANT:
-      // TODO: MAKE THIS THE OVERVIEW FOR PERSON LOGGING IN
+      case "notifications":
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Notifications Settings</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold">Email Notifications</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Receive email notifications for important updates
+                    </p>
+                  </div>
+                  <Switch defaultChecked />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold">Form Updates</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Get notified when your forms are approved or need changes
+                    </p>
+                  </div>
+                  <Switch defaultChecked />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold">System Notifications</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Receive notifications about system maintenance and updates
+                    </p>
+                  </div>
+                  <Switch defaultChecked />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        );
+
+      case "manage-form-schemas":
+        if (!permissions.canManageFormSchemas) {
+          return (
+            <Card>
+              <CardHeader>
+                <CardTitle>Permission Denied</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p>You do not have permission to access this page.</p>
+              </CardContent>
+            </Card>
+          )
+        }
+        return <FormSchemaManager />;
+
       default:
         return (
           <Card>
             <CardHeader>
-              <CardTitle>{dashboard.title}</CardTitle>
+              <CardTitle>Welcome to {dashboard.title}</CardTitle>
             </CardHeader>
             <CardContent>
               <p>Select an option from the sidebar</p>
@@ -272,7 +353,7 @@ const DashboardContent = ({ activeView, dashboardConfig }) => {
     }
   };
 
-  return <div className="w-full">{renderContent()}</div>;
+  return renderContent();
 };
 
 // Loading skeleton

@@ -2,7 +2,12 @@
 //
 import * as React from "react";
 import { useEffect, useState } from "react";
+<<<<<<< HEAD
 import { Users, File } from "lucide-react";
+=======
+import { Users, File, User, LucideIcon } from "lucide-react";
+import { NavMain } from "@/components/sidebar-nav-main";
+>>>>>>> 55ba5184c6243569ec7d21844784a579eb9ac97f
 import { NavUser } from "@/components/sidebar-nav-user";
 import {
   Sidebar,
@@ -10,7 +15,31 @@ import {
   SidebarFooter,
 } from "@/components/ui/sidebar";
 import { SidebarLogo } from "@/components/sidebar-logo";
-import { api } from "@/api/api.js";
+import { api } from "@/api/api";
+
+interface SidebarItem {
+  id: string;
+  title: string;
+  permissions: string[];
+}
+
+interface SidebarSection {
+  title: string;
+  icon: string;
+  isActive: boolean;
+  items: SidebarItem[];
+}
+
+interface UserDataState {
+  name: string;
+  email: string;
+  avatar: string;
+}
+
+interface DashboardConfig {
+  getSidebar: () => SidebarSection[];
+  getDashboard: () => { defaultView: string; title: string };
+}
 
 export function SidebarNav({
   onViewChange,
@@ -19,19 +48,14 @@ export function SidebarNav({
   ...props
 }: React.ComponentProps<typeof Sidebar> & {
   onViewChange: (view: string) => void;
-  userData?: any,
-  dashboardConfig?: any
+  userData?: any;
+  dashboardConfig?: DashboardConfig;
 }) {
-
-
-  const [userDataState, setUserDataState] = useState(
-    {
-      name: userData?.username || "",
-      email: userData?.email || "",
-      avatar: userData?.avatar || "",
-
-    }
-  );
+  const [userDataState, setUserDataState] = useState<UserDataState>({
+    name: userData?.username || "",
+    email: userData?.email || "",
+    avatar: userData?.avatar || "",
+  });
 
   // get default view from config
   const dashboard = dashboardConfig?.getDashboard() || { defaultView: "" }
@@ -42,7 +66,7 @@ export function SidebarNav({
     if (!userData) {
       const fetchUserData = async () => {
         try {
-          const user = await api.getCurrentUser();
+          const user = await api.auth.getCurrentUser();
           setUserDataState({
             name: user.username,
             email: user.email,
@@ -64,17 +88,17 @@ export function SidebarNav({
     onViewChange(itemId);
   };
 
-
   // get icon component based on icon name
-  const getIconComponent = (iconName: string) => {
-    const icons = {
+  const getIconComponent = (iconName: string): LucideIcon => {
+    const icons: Record<string, LucideIcon> = {
       "Users": Users,
       "File": File,
-    }
+      "User": User,
+    };
 
     // default to users icon if not found
     return icons[iconName] || Users;
-  }
+  };
 
   const buildNavItems = () => {
     if (!dashboardConfig) {
@@ -100,12 +124,12 @@ export function SidebarNav({
 
     const sidebar = dashboardConfig.getSidebar();
 
-    return sidebar.map(section => ({
+    return sidebar.map((section: SidebarSection) => ({
       title: section.title,
       url: "#",
       icon: getIconComponent(section.icon),
       isActive: section.isActive,
-      items: section.items.map(item => ({
+      items: section.items.map((item: SidebarItem) => ({
         id: item.id,
         title: item.title,
         url: "#",
@@ -121,12 +145,10 @@ export function SidebarNav({
     navMain: buildNavItems(),
   };
 
-
-
   return (
     <Sidebar variant="inset" {...props}>
       {/* NOTE: SIDEBAR LOGO */}
-      <SidebarLogo />
+      <SidebarLogo userData={userData} />
 
       {/* NOTE:: SIDEBAR NAV ITEMS */}
       <SidebarContent>
@@ -135,7 +157,7 @@ export function SidebarNav({
 
       {/* NOTE: SIDEBAR BOTTOM FOOTER SETTINGS */}
       <SidebarFooter>
-        <NavUser user={navData.user} />
+        <NavUser user={navData.user} onViewChange={onViewChange} />
       </SidebarFooter>
     </Sidebar>
   );

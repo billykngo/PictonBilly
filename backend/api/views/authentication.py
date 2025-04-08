@@ -1,33 +1,39 @@
+<<<<<<< HEAD
 from rest_framework.exceptions import ValidationError
+=======
+import json
+import secrets
+
+import jwt
+import requests
+>>>>>>> 55ba5184c6243569ec7d21844784a579eb9ac97f
 from django.conf import settings
-from django.contrib.auth import authenticate, login, get_user_model, logout
-from django.contrib.auth.hashers import make_password
-
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.hashers import check_password, make_password
+from django.db import IntegrityError
+from django.forms import ValidationError
 from jwt.algorithms import RSAAlgorithm
-
-from rest_framework import viewsets, status, views
+from rest_framework import status, views, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import (
     AuthenticationFailed,
     NotFound,
+)
+from rest_framework.exceptions import (
     PermissionDenied as DRFPermissionDenied,
 )
-from rest_framework.response import Response
+from rest_framework.exceptions import (
+    ValidationError as DRFValidationError,
+)
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from utils import MethodNameMixin, pretty_print
 
-import jwt
-import json
-import requests
-import secrets
-
-from utils import pretty_print, MethodNameMixin
 from ..core import AccountInactiveError, InvalidCredentialsError
-from ..serializers import LoginSerializer
 from ..models import User
-from django.conf import settings
+from ..serializers import LoginSerializer
 
 DEBUG = settings.DEBUG
-User = get_user_model()
 
 
 # TODO: expand to also interchangebly accept either username or email
@@ -40,13 +46,6 @@ class LoginView(views.APIView, MethodNameMixin):
         try:
             serializer = LoginSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
-
-            if DEBUG:
-                pretty_print(
-                    f"Received Request from {self._get_method_name()}: {request}",
-                    "DEBUG",
-                )
-
             username = request.data.get("username")
             password = request.data.get("password")
 
@@ -59,11 +58,26 @@ class LoginView(views.APIView, MethodNameMixin):
 
             user = authenticate(username=username, password=password)
             if not user:
+                # could not validate user with username, try with email
+
+                # check if @ in input
+                if "@" in username:
+                    try:
+                        user_obj = User.objects.get(email=username)
+                        user = authenticate(
+                            username=user_obj.username, password=password
+                        )
+
+                    except User.DoesNotExist:
+                        pass
+
+            if not user:
+                # Email and username lookup failed raise Credentials Error
                 pretty_print(
                     f"Error Encountered from {self._get_method_name()}: Invalid Credentials",
                     "ERROR",
                 )
-                raise InvalidCredentialsError()
+                raise InvalidCredentialsError
 
             # check if account is activated or not
             if not user.is_active:
@@ -106,8 +120,56 @@ class RegisterView(views.APIView, MethodNameMixin):
         try:
             data = request.data
 
+        pretty_print(
+            f"Received Request from {self._get_method_name()}: {data}", "DEBUG"
+        )
+        # Validate required fields
+        required_fields = ["email", "username", "password", "firstName", "lastName"]
+        missing_fields = []
+        for field in required_fields:
+            if not data.get(field):
+                missing_fields.append(field)
+
+        if missing_fields:
             pretty_print(
-                f"Received Request from {self._get_method_name()}: {data}", "DEBUG"
+                f"from {self._get_method_name()}: Missing required fields: {missing_fields}",
+                "ERROR",
+            )
+            return Response(
+                {
+                    "error": f"The following fields are required: {', '.join(missing_fields)}"
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Password Strength Validation
+        password = data.get("password", "")
+        if len(password) < 8:
+            return Response(
+                {"error": "Password must be at least 8 characters long"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Check if user already exists
+        if User.objects.filter(email=data["email"]).exists():
+            pretty_print(
+                f"from {self._get_method_name()}: User with this email already exists",
+                "ERROR",
+            )
+            raise ValidationError("User with this email already exists")
+        if User.objects.filter(username=data["username"]).exists():
+            pretty_print(
+                f"from {self._get_method_name()}: User with this username already exists",
+                "ERROR",
+            )
+            raise ValidationError("User with this username already exists")
+        if (
+            data.get("phone")
+            and User.objects.filter(phone_number=data["phone"]).exists()
+        ):
+            pretty_print(
+                f"from {self._get_method_name()}: User with this phone already exists",
+                "ERROR",
             )
 
             # Validate required fields
@@ -311,7 +373,7 @@ class AzureAuthViewSet(viewsets.ViewSet, MethodNameMixin):
 
 
 from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 
 
 class LogoutView(views.APIView):
@@ -333,3 +395,81 @@ class LogoutView(views.APIView):
             return Response(
                 {"error": "Logout failed"}, status=status.HTTP_400_BAD_REQUEST
             )
+
+
+@method_decorator(ensure_csrf_cookie, name="dispatch")
+class AuthViewSet(viewsets.ViewSet):
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny])
+    def csrf(self, request):
+        """Get a new CSRF token"""
+        return Response({"message": "CSRF cookie set"})
+
+    @action(detail=False, methods=["post"], permission_classes=[IsAuthenticated])
+    def update_email(self, request):
+        """Update user's email address"""
+        try:
+            email = request.data.get("email")
+            if not email:
+                raise DRFValidationError("Email is required")
+
+            # Check if email is already taken
+            if User.objects.filter(email=email).exclude(id=request.user.id).exists():
+                raise DRFValidationError("Email is already taken")
+
+            request.user.email = email
+            request.user.save()
+            return Response({"message": "Email updated successfully"})
+
+        except IntegrityError:
+            raise DRFValidationError("Email is already taken")
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=["post"], permission_classes=[IsAuthenticated])
+    def update_username(self, request):
+        """Update user's username"""
+        try:
+            username = request.data.get("username")
+            if not username:
+                raise DRFValidationError("Username is required")
+
+            # Check if username is already taken
+            if (
+                User.objects.filter(username=username)
+                .exclude(id=request.user.id)
+                .exists()
+            ):
+                raise DRFValidationError("Username is already taken")
+
+            request.user.username = username
+            request.user.save()
+            return Response({"message": "Username updated successfully"})
+
+        except IntegrityError:
+            raise DRFValidationError("Username is already taken")
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=["post"], permission_classes=[IsAuthenticated])
+    def update_password(self, request):
+        """Update user's password"""
+        try:
+            current_password = request.data.get("currentPassword")
+            new_password = request.data.get("newPassword")
+
+            if not current_password or not new_password:
+                raise DRFValidationError(
+                    "Current password and new password are required"
+                )
+
+            # Verify current password
+            if not check_password(current_password, request.user.password):
+                raise DRFValidationError("Current password is incorrect")
+
+            # Update password
+            request.user.password = make_password(new_password)
+            request.user.save()
+            return Response({"message": "Password updated successfully"})
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
