@@ -8,8 +8,8 @@
 \usepackage{amssymb}
 
 % -- placeholder variables 
-\newcommand{\lastName}{$LAST_NAME$}
 \newcommand{\firstName}{$FIRST_NAME$}
+\newcommand{\lastName}{$LAST_NAME$}
 \newcommand{\middleName}{$MIDDLE_NAME$}
 \newcommand{\studentID}{$STUDENT_ID$}
 \newcommand{\phoneNumber}{$PHONE_NUMBER$}
@@ -36,6 +36,24 @@
 % signature placeholder
 \newcommand{\studentSignature}{$STUDENT_SIGNATURE$}
 \newcommand{\currentDate}{$CURRENT_DATE$}
+
+\newcommand{\programDirectorSignature}{$PROGRAM_DIRECTOR_SIGNATURE$}
+\newcommand{\deptChairSignature}{$DEPT_CHAIR_SIGNTURE$}
+\newcommand{\assocDeanSignature}{$ASSOC_DEAN_SIGNATURE$}
+\newcommand{\viceProvostSignature}{$VICE_PROVOST_SIGNATURE$}
+
+\newcommand{\programDirectorName}{$PROGRAM_DIRECTOR_NAME$}
+\newcommand{\deptChairName}{$DEPT_CHAIR_NAME$}
+\newcommand{\assocDeanName}{$ASSOC_DEAN_NAME$}
+\newcommand{\viceProvostName}{$VICE_PROVOST_NAME$}
+
+
+\newcommand{\programDirectorDate}{$PROGRAM_DIRECTOR_DATE$}
+\newcommand{\deptChairDate}{$DEPT_CHAIR_DATE$}
+\newcommand{\assocDeanDate}{$ASSOC_DEAN_DATE$}
+\newcommand{\viceProvostDate}{$VICE_PROVOST_DATE$}
+
+
 
 % -- for quick checkboxes in the form
 \newcommand{\checkbox}[1]{$#1$}
@@ -130,44 +148,45 @@
 \hline
 \multicolumn{1}{|c|}{\textbf{REQUIRED APPROVALS}} & \multicolumn{1}{c|}{\textbf{ACADEMIC OFFICE USE ONLY}}\\
 \hline
+
+
 % -- Left Box (Approvals) --
 \begin{minipage}[t]{0.68\textwidth}
-    \textbf{Graduate Advisor/Committee Chair}\hfill 
-    \checkbox{} APPROVED \quad \checkbox{} DISAPPROVED \hfill 
-    Signature: \underline{\hspace{1.5in}} \hfill Date: \underline{\hspace{0.8in}} \\
-    Print Name: \underline{\hspace{1.5in}} 
-    \vspace{1em}
-
-    \textbf{Graduate Studies/Program Director}\hfill 
-    \checkbox{} APPROVED \quad \checkbox{} DISAPPROVED \hfill 
-    Signature: \underline{\hspace{1.5in}} \hfill Date: \underline{\hspace{0.8in}} \\
-    Print Name: \underline{\hspace{1.5in}}
-    \vspace{1em}
-
-    \textbf{Department Chair if required}\hfill 
-    \checkbox{} APPROVED \quad \checkbox{} DISAPPROVED \hfill 
-    Signature: \underline{\hspace{1.5in}} \hfill Date: \underline{\hspace{0.8in}} \\
-    Print Name: \underline{\hspace{1.5in}}
-    \vspace{1em}
-
-    \textbf{Assoc/Asst Dean for Graduate Studies}\hfill 
-    \checkbox{} APPROVED \quad \checkbox{} DISAPPROVED \hfill 
-    Signature: \underline{\hspace{1.5in}} \hfill Date: \underline{\hspace{0.8in}} \\
-    Print Name: \underline{\hspace{1.5in}}
-    \vspace{1em}
-
-    \textbf{Vice Provost/Dean of the Graduate School}\hfill 
-    \checkbox{} APPROVED \quad \checkbox{} DISAPPROVED \hfill 
-    Signature: \underline{\hspace{1.5in}} \hfill Date: \underline{\hspace{0.8in}} \\
-    Print Name: \underline{\hspace{1.5in}}
+\textbf{Graduate Studies/Program Director}\hfill 
+\checkbox{} APPROVED \quad \checkbox{} DISAPPROVED \hfill 
+Signature: \programDirectorSignature \hfill Date: \programDirectorDate \\
+Print Name: \programDirectorName
+\vspace{1em}
+\\
+\textbf{Department Chair if required}\hfill 
+\checkbox{} APPROVED \quad \checkbox{} DISAPPROVED \hfill 
+Signature: \deptChairSignature \hfill Date: \deptChairDate \\
+Print Name: \deptChairName
+\vspace{1em}
+\\
+\textbf{Assoc/Asst Dean for Graduate Studies}\hfill 
+\checkbox{} APPROVED \quad \checkbox{} DISAPPROVED \hfill 
+Signature: \assocDeanSignature \hfill Date: \assocDeanDate \\
+Print Name: \assocDeanName
+\vspace{1em}
+\\
+\textbf{Vice Provost/Dean of the Graduate School}\hfill 
+\checkbox{} APPROVED \quad \checkbox{} DISAPPROVED \hfill 
+Signature: \viceProvostSignature \hfill Date: \viceProvostDate \\
+Print Name: \viceProvostName
 \end{minipage}
+
+
+
 % -- Right Box (Office Use) --
 &
 \begin{minipage}[t]{0.26\textwidth}
 \vspace{1em}
 \textbf{COMMENTS / NOTES:}
 
-\vspace{8em} % space for writing
+$STAFF_COMMENTS$
+
+\vspace{4em} % space for writing
 
 \end{minipage}\\
 \hline

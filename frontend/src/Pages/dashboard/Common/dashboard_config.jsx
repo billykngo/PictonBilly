@@ -12,11 +12,6 @@ const roleConfigs = {
             id: "manage-users",
             title: "Manage Users",
             permissions: ["admin.manage_users"]
-          },
-          {
-            id: "create-users",
-            title: "Create Users",
-            permissions: ["admin.create_users"]
           }
         ]
       },
@@ -31,7 +26,19 @@ const roleConfigs = {
             permissions: ["admin.manage_form_schemas"]
           }
         ]
-      }
+      },
+      {
+        title: "Organization",
+        icon: "Building",
+        isActive: true,
+        items: [
+          {
+            id: "manage-organization",
+            title: "Organization Structure",
+            permissions: ["admin.manage_organization"]
+          }
+        ]
+      },
     ],
     dashboard: {
       defaultView: "",
@@ -41,7 +48,8 @@ const roleConfigs = {
       canEditUsers: true,
       canCreateUsers: true,
       canToggleUserStatus: true,
-      canManageFormSchemas: true
+      canManageFormSchemas: true,
+      canManageOrganization: true
     }
   },
 
@@ -56,9 +64,27 @@ const roleConfigs = {
             id: "review-forms",
             title: "Review Forms",
             permissions: ["staff.review_forms"]
+          },
+          {
+            id: 'update-signature',
+            title: 'Update Signature',
+            permissions: ['student.update_signature']
           }
+
         ],
-      }
+      },
+      {
+        title: 'Delegations',
+        icon: "UserPlus",
+        isActive: true,
+        items: [
+          {
+            id: "manage-delegations",
+            title: "Manage Delegations",
+            permissions: ['staff.manage_delegations'],
+          }
+        ]
+      },
     ],
 
     dashboard: {
@@ -69,7 +95,9 @@ const roleConfigs = {
     permissions: {
       canEditUsers: false,
       canCreateUsers: false,
-      canToggleUserStatus: false
+      canToggleUserStatus: false,
+      canUpdateSignature: true,
+      canManageDelegations: true
     }
   },
 
@@ -90,6 +118,11 @@ const roleConfigs = {
             id: 'view-forms',
             title: "View Forms",
             permissions: ["student.view_forms"]
+          },
+          {
+            id: 'update-signature',
+            title: 'Update Signature',
+            permissions: ['student.update_signature']
           }
         ],
       },
@@ -114,6 +147,7 @@ const roleConfigs = {
       canEditUsers: false,
       canCreateUsers: false,
       canToggleUserStatus: false,
+      canUpdateSignature: true,
       student: {
         submit_forms: true,
         view_forms: true,

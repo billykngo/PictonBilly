@@ -1,9 +1,10 @@
 import os
+import subprocess
 import tempfile
 from datetime import datetime
+
 from django.conf import settings
 from django.core.files.base import ContentFile
-import subprocess
 
 from utils import pretty_print
 
@@ -27,28 +28,22 @@ class FormPDFGenerator:
         os.makedirs(self.template_dir, exist_ok=True)
 
         # Path to the university logo
-        self.logo_path = os.path.join(
-            settings.BASE_DIR, "static", "img", "uh.png"
-        )
-        
+        self.logo_path = os.path.join(settings.BASE_DIR, "static", "img", "uh.png")
+
         # Ensure the logo exists
         if not os.path.exists(self.logo_path):
             pretty_print("Warning: University logo not found", "WARNING")
             # Try alternative path
-            self.logo_path = os.path.join(
-                settings.STATIC_ROOT, "img", "uh.png"
-            )
+            self.logo_path = os.path.join(settings.STATIC_ROOT, "img", "uh.png")
             if not os.path.exists(self.logo_path):
-                pretty_print("Error: University logo not found in any location", "ERROR")
+                pretty_print(
+                    "Error: University logo not found in any location", "ERROR"
+                )
                 self.logo_path = ""  # Set to empty string if logo is not found
 
-    def _get_logo_path(self, is_dark_mode=False):
-        """Get the appropriate logo path based on theme mode"""
-        return self.logo_path
-
-    def generate_template_form(self, template_name: str, user, form_data):
+    def generate_template_form(self, template_name, user, form_data):
         """
-        Route to the appropriate template generation function based on template name
+        Generate a form PDF based on template name and form data
 
         Args:
             template_name: String identifier for the form template
@@ -58,56 +53,410 @@ class FormPDFGenerator:
         Returns:
             The generated PDF from the appropriate template
         """
-
         pretty_print(
             f"received params in generate_template_form {template_name}, {user}, {list(form_data)}",
             "DEBUG",
         )
-        if template_name in ["withdrawal", "Term Withdrawal Form"]:
-            return self.generate_withdrawal_form(user, form_data)
-        elif template_name in ["graduate", "Graduate Petition Form"]:
-            return self.generate_graduate_petition(user, form_data)
-        else:
-            pretty_print(f"NOT A VALID TEMPLATE_NAME: {template_name}", "ERROR")
-            raise ValueError(f"Invalid Template Name: {template_name}")
 
-    def generate_withdrawal_form(self, user, form_data):
+        return self._generate_form_dynamically(template_name, user, form_data)
+
+    def generate_signed_form(
+        self, form_submission, approver, decision, comments, signature_position=None
+    ):
         """
-        Generate a term withdrawal form PDF for the given user and form data
+        Generate a signed version of the form with approver's signature
+
+        Args:
+            form_submission: The FormSubmission object
+            approver: The User (staff) who is approving/rejecting
+            decision: "approved" or "rejected"
+            comments: Comments from the approver
+            signature_position: Position key for signature placement (PROGRAM_DIRECTOR, DEPARTMENT_CHAIR...)
+
+        Returns:
+            ContentFile with the signed PDF
         """
-        # Get template content
-        template_path = os.path.join(self.template_dir, "term_withdrawal.tex")
-        with open(template_path, "r") as file:
-            template_content = file.read()
+        try:
+            # Get template content based on form_submission template
+            template_name = form_submission.form_template
 
-        # Format date as mm/dd/yyyy
-        current_date = datetime.now().strftime("%m/%d/%Y")
+            # Get all existing approvals for this form
+            from api.models import FormApproval
 
-        # Get user's name components
-        first_name = form_data.get("first_name", user.first_name)
-        middle_name = form_data.get("middle_name", "")
-        last_name = form_data.get("last_name", user.last_name)
+            existing_approvals = FormApproval.objects.filter(
+                form_submission=form_submission, decision__in=["approved", "rejected"]
+            ).select_related("approver", "workflow")
 
-        # Format checkboxes for semester selection
-        fall_selected = (
-            "\\checkmark" if form_data.get("season") == "Fall" else "\\square"
+            form_data = form_submission.form_data.copy()
+
+            # Start with a base PDF generation
+            pdf_content = self._generate_form_dynamically(
+                template_name,
+                form_submission.submitter,
+                form_data,
+                approver=approver,
+                decision=decision,
+                comments=comments,
+                signature_position=signature_position,
+                existing_approvals=existing_approvals,
+                submission=form_submission,
+            )
+
+            return pdf_content
+        except Exception as e:
+            pretty_print(f"Error generating signed form: {str(e)}", "ERROR")
+            import traceback
+
+            pretty_print(traceback.format_exc(), "ERROR")
+            return None
+
+    def _generate_form_dynamically(
+        self,
+        template_name,
+        user,
+        form_data,
+        approver=None,
+        decision=None,
+        comments=None,
+        signature_position=None,
+        existing_approvals=None,
+        submission=None,
+    ):
+        """
+        Generate a form dynamically based on the form template schema
+
+        Args:
+            template_name: The name or object of the form template
+            user: The user submitting the form
+            form_data: The form data dictionary
+            approver: Optional approver for signed forms
+            decision: Optional decision for signed forms (approved/rejected)
+            comments: Optional comments from approver
+            signature_position: Position key for signature placement
+            existing_approvals: List of existing approvals to include in the document
+
+        Returns:
+            A ContentFile containing the generated PDF
+        """
+        from api.models import FormTemplate
+
+        try:
+            # Get the template object from the database
+            if isinstance(template_name, str):
+                try:
+                    # First try exact match
+                    form_template = FormTemplate.objects.get(name=template_name)
+                except FormTemplate.DoesNotExist:
+                    # Try partial match (for "graduate" -> "Graduate Petition Form")
+                    form_template = FormTemplate.objects.filter(
+                        name__icontains=template_name
+                    ).first()
+                    if not form_template:
+                        pretty_print(f"Template not found: {template_name}", "ERROR")
+                        raise ValueError(f"Template not found: {template_name}")
+            else:
+                # Template is already an object
+                form_template = template_name
+
+            # Get template path based on template name
+            template_file = form_template.latex_template_path
+            template_path = os.path.join(self.template_dir, template_file)
+
+            pretty_print(f"Using template file: {template_path}", "DEBUG")
+
+            # Ensure template file exists
+            if not os.path.exists(template_path):
+                pretty_print(f"Template file not found: {template_path}", "ERROR")
+                raise ValueError(f"Template file not found: {template_path}")
+
+            # Load template content
+            with open(template_path, "r") as file:
+                template_content = file.read()
+
+            # Start with basic replacements
+            replacements = {
+                "$CURRENT_DATE$": datetime.now().strftime("%m/%d/%Y"),
+                "$UNIVERSITY_LOGO$": self.logo_path,
+            }
+
+            # Add student signature
+            # BUG: possible bug have to check what happens to student signature when a staff signs and returns it
+            if user.signature:
+                replacements["$STUDENT_SIGNATURE$"] = self._process_signature(user)
+            else:
+                replacements["$STUDENT_SIGNATURE$"] = ""
+
+            # Common fields that exist in most forms
+            common_fields = {
+                "first_name": "$FIRST_NAME$",
+                "last_name": "$LAST_NAME$",
+                "middle_name": "$MIDDLE_NAME$",
+                "student_id": "$STUDENT_ID$",
+                "phone_number": "$PHONE_NUMBER$",
+                "email": "$EMAIL_ADDRESS$",
+                "email_address": "$EMAIL_ADDRESS$",
+                "program_plan": "$PROGRAM_PLAN$",
+                "academic_career": "$ACADEMIC_CAREER$",
+                "year": "$YEAR$",  # Graduate petition or common year
+                "withdrawal_year": "$WITHDRAWAL_YEAR$",  # Term withdrawal
+                "season": "$SEASON$",  # Season value itself
+            }
+
+            # Process common fields
+            for field_name, placeholder in common_fields.items():
+                if field_name in form_data:
+                    # Get value with proper handling
+                    value = form_data.get(field_name, "")
+
+                    # Format phone number if needed
+                    if field_name == "phone_number" and value:
+                        value = self._format_phone_number(value)
+
+                    # Fall back to user profile if empty
+                    if not value and hasattr(user, field_name):
+                        value = getattr(user, field_name)
+                        if field_name == "phone_number":
+                            value = self._format_phone_number(value)
+
+                    replacements[placeholder] = str(value)
+
+            # BUG: Static for now but move this over to a lookup table
+            standard_positions = [
+                "PROGRAM_DIRECTOR",
+                "DEPT_CHAIR",
+                "ASSOC_DEAN",
+                "VICE_PROVOST",
+            ]
+
+            for position in standard_positions:
+                replacements[f"${position}_SIGNATURE$"] = ""
+                replacements[f"${position}_NAME$"] = ""
+                replacements[f"${position}_DATE$"] = ""
+
+            if existing_approvals:
+                for approval in existing_approvals:
+                    if not approval.workflow or not approval.approver:
+                        continue
+
+                    position_map = {
+                        "Graduate Studies/Program Director": "PROGRAM_DIRECTOR",
+                        "Department Chair": "DEPT_CHAIR",
+                        "Associate/Assistant Dean for Graduate Studies": "ASSOC_DEAN",
+                        "Vice Provost/Dean of the Graduate School": "VICE_PROVOST",
+                    }
+
+                    position = approval.workflow.approval_position
+                    key = position_map.get(position)
+
+                    if key:
+                        if approval.approver.signature:
+                            replacements[f"${key}_SIGNATURE$"] = (
+                                self._process_signature(approval.approver)
+                            )
+                        replacements[f"${key}_NAME$"] = (
+                            f"{approval.approver.first_name} {approval.approver.last_name}"
+                        )
+                        replacements[f"${key}_DATE$"] = (
+                            approval.decided_at.strftime("%m/%d/%Y")
+                            if approval.decided_at
+                            else ""
+                        )
+
+            # Add current approver's signature if provided
+            if approver and decision and signature_position:
+                # Set checkmarks for approval status based on position
+                if decision == "approved":
+                    replacements[f"${signature_position}_APPROVED$"] = "\\checkmark"
+                    replacements[f"${signature_position}_REJECTED$"] = "\\square"
+                else:
+                    replacements[f"${signature_position}_APPROVED$"] = "\\square"
+                    replacements[f"${signature_position}_REJECTED$"] = "\\checkmark"
+
+                # Add signature and metadata
+                if approver.signature:
+                    replacements[f"${signature_position}_SIGNATURE$"] = (
+                        self._process_signature(approver)
+                    )
+                replacements[f"${signature_position}_NAME$"] = (
+                    f"{approver.first_name} {approver.last_name}"
+                )
+                replacements[f"${signature_position}_DATE$"] = datetime.now().strftime(
+                    "%m/%d/%Y"
+                )
+                replacements[f"${signature_position}_COMMENTS$"] = (
+                    comments if comments else ""
+                )
+
+            # Handle template-specific fields
+            #
+            # BUG: static remove this and shift over to a dynamic form processor
+            if "Graduate Petition" in form_template.name:
+                self._process_graduate_petition_fields(form_data, replacements)
+            elif "Term Withdrawal" in form_template.name:
+                self._process_term_withdrawal_fields(form_data, replacements)
+            elif "Graduate Posthumous" in form_template.name:
+                self._process_graduate_posthumous_fields(form_data, replacements)
+            else:
+                # Generic processing for other templates
+                pretty_print(
+                    f"Using generic field processing for {form_template.name}", "DEBUG"
+                )
+                self._process_generic_fields(
+                    form_template.field_schema.get("fields", []),
+                    form_data,
+                    template_content,
+                    replacements,
+                )
+
+            # Add approval information if this is a signed form and no specific position
+            if approver and decision and not signature_position:
+                # Set checkmarks for approval status
+                staff_approved = "\\checkmark" if decision == "approved" else "\\square"
+                staff_rejected = "\\checkmark" if decision == "rejected" else "\\square"
+
+                # Add approval information to replacements
+                replacements.update(
+                    {
+                        "$STAFF_APPROVED$": staff_approved,
+                        "$STAFF_REJECTED$": staff_rejected,
+                        "$STAFF_SIGNATURE$": self._process_signature(approver)
+                        if approver.signature
+                        else "",
+                        "$STAFF_NAME$": f"{approver.first_name} {approver.last_name}",
+                        "$APPROVAL_DATE$": datetime.now().strftime("%m/%d/%Y"),
+                        "$STAFF_COMMENTS$": comments if comments else "",
+                    }
+                )
+
+            # Perform all replacements
+            for placeholder, value in replacements.items():
+                template_content = template_content.replace(placeholder, str(value))
+
+            # Compile the LaTeX to PDF
+            pdf_file = self._compile_latex(template_content)
+
+            # Set appropriate filename
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            user_id = getattr(user, "id", "0")
+
+            if approver and decision:
+                # For signed forms - fix the reference to form_submission
+                try:
+                    # submission should be passed in instead of referencing an undefined variable
+                    identifier = (
+                        submission.submission_identifier.identifier
+                        if "submission" in locals()
+                        else f"form_{timestamp}"
+                    )
+                except:
+                    # Use a safer fallback that doesn't reference the undefined variable
+                    identifier = f"form_{timestamp}"
+
+                pdf_file.name = f"{identifier}_{decision}_{timestamp}.pdf"
+
+            else:
+                # For regular forms
+                if "Graduate Petition" in form_template.name:
+                    template_code = "petition"
+                elif "Term Withdrawal" in form_template.name:
+                    template_code = "withdrawal"
+                else:
+                    template_code = form_template.name.lower().replace(" ", "_")[:10]
+
+                pdf_file.name = f"{template_code}_user{user_id}_{timestamp}.pdf"
+            return pdf_file
+
+        except Exception as e:
+            pretty_print(f"Error in _generate_form_dynamically: {str(e)}", "ERROR")
+            import traceback
+
+            pretty_print(traceback.format_exc(), "ERROR")
+            return None
+
+    def _process_graduate_posthumous_fields(self, form_data, replacements):
+        """Process specific fields for Graduate Posthumous Degree Petition"""
+        # Year and season
+        replacements["$YEAR$"] = str(form_data.get("year", datetime.now().year))
+        replacements["$SEASON$"] = form_data.get("season", "")
+
+        # Petition explanation (required for posthumous forms)
+        replacements["$PETITION_EXPLANATION$"] = form_data.get(
+            "petition_explanation", ""
         )
-        spring_selected = (
-            "\\checkmark" if form_data.get("season") == "Spring" else "\\square"
-        )
-        summer_selected = (
-            "\\checkmark" if form_data.get("season") == "Summer" else "\\square"
+
+        # Handle petition purpose checkbox - for posthumous it's always the same purpose
+        replacements["$PURPOSE_POSTHUMOUS_DEGREE$"] = "\\checkmark"
+
+    def _process_graduate_petition_fields(self, form_data, replacements):
+        """Process specific fields for Graduate Petition forms"""
+        # Year and season
+        replacements["$YEAR$"] = str(form_data.get("year", datetime.now().year))
+        replacements["$SEASON$"] = form_data.get("season", "")
+
+        # Petition explanation
+        replacements["$PETITION_EXPLANATION$"] = form_data.get(
+            "petition_explanation", ""
         )
 
-        # Current date in MM/DD/YYYY format
-        current_date = datetime.now().strftime("%m/%d/%Y")
+        # Handle petition purpose checkboxes
+        purpose_map = {
+            "update_program_status": "$PURPOSE_UPDATE_PROGRAM_STATUS$",
+            "admission_status_change": "$PURPOSE_ADMISSION_STATUS_CHANGE$",
+            "add_concurrent_degree": "$PURPOSE_ADD_CONCURRENT$",
+            "change_degree_objective": "$PURPOSE_CHANGE_DEGREE_OBJECTIVE$",
+            "degree_requirements_exception": "$PURPOSE_DEGREE_REQUIREMENTS_EXCEPTION$",
+            "leave_of_absence": "$PURPOSE_LEAVE_OF_ABSENCE$",
+            "reinstate_discontinued": "$PURPOSE_REINSTATE_DISCONTINUED$",
+            "request_to_graduate": "$PURPOSE_REQUEST_TO_GRADUATE$",
+            "change_admin_term": "$PURPOSE_CHANGE_ADMIN_TERM$",
+            "early_submission": "$PURPOSE_EARLY_SUBMISSION$",
+            "other": "$PURPOSE_OTHER$",
+        }
 
-        # Process initials
+        selected_purpose = form_data.get("petition_purpose", "")
+        for purpose, placeholder in purpose_map.items():
+            replacements[placeholder] = (
+                "\\checkmark" if purpose == selected_purpose else "\\square"
+            )
+
+        # Initialize standard approval signature placeholders
+        replacements["$PROGRAM_DIRECTOR_SIGNATURE$"] = ""
+        replacements["$DEPT_CHAIR_SIGNATURE$"] = ""
+        replacements["$ASSOC_DEAN_SIGNATURE$"] = ""
+        replacements["$VICE_PROVOST_SIGNATURE$"] = ""
+        replacements["$PROGRAM_DIRECTOR_NAME$"] = ""
+        replacements["$DEPT_CHAIR_NAME$"] = ""
+        replacements["$ASSOC_DEAN_NAME$"] = ""
+        replacements["$VICE_PROVOST_NAME$"] = ""
+        replacements["$PROGRAM_DIRECTOR_DATE$"] = ""
+        replacements["$DEPT_CHAIR_DATE$"] = ""
+        replacements["$ASSOC_DEAN_DATE$"] = ""
+        replacements["$VICE_PROVOST_DATE$"] = ""
+
+    def _process_term_withdrawal_fields(self, form_data, replacements):
+        """Process specific fields for Term Withdrawal forms"""
+        # Year field
+        year_value = form_data.get(
+            "withdrawal_year", form_data.get("year", datetime.now().year)
+        )
+        replacements["$WITHDRAWAL_YEAR$"] = str(year_value)
+
+        # Season checkboxes
+        season = form_data.get("season", "").lower()
+        replacements["$FALL_SELECTED$"] = (
+            "\\checkmark" if season == "fall" else "\\square"
+        )
+        replacements["$SPRING_SELECTED$"] = (
+            "\\checkmark" if season == "spring" else "\\square"
+        )
+        replacements["$SUMMER_SELECTED$"] = (
+            "\\checkmark" if season == "summer" else "\\square"
+        )
+
+        # Handle initials
         initials = form_data.get("initials", {})
         initials_text = form_data.get("initialsText", {})
 
-        # dictionary placeholders for the intial all that apply section
-        initials_replacements = {}
         for key in [
             "financial_aid",
             "international_student",
@@ -121,143 +470,54 @@ class FormPDFGenerator:
         ]:
             placeholder = f"$INIT_{key.upper()}$"
             if initials.get(key) and key in initials_text and initials_text[key]:
-                initials_replacements[placeholder] = initials_text[key]
+                replacements[placeholder] = initials_text[key]
             else:
-                initials_replacements[placeholder] = " "
+                replacements[placeholder] = " "
 
-        # Handle season selection
-        season = form_data.get("season", "").lower()
-        fall_selected = "\\checkmark" if season == "fall" else "\\square"
-        spring_selected = "\\checkmark" if season == "spring" else "\\square"
-        summer_selected = "\\checkmark" if season == "summer" else "\\square"
+    def _process_generic_fields(
+        self, fields, form_data, template_content, replacements
+    ):
+        """Process fields for generic form templates by searching for placeholders in the template"""
+        # Find all placeholders in the template content
+        import re
 
-        # Get the logo path
-        logo_path = self.logo_path
+        placeholder_pattern = re.compile(r"\$([A-Z_]+)\$")
+        placeholders = set(placeholder_pattern.findall(template_content))
 
-        # Build replacements for placeholders:
-        replacements = {
-            "$LAST_NAME$": form_data.get("last_name", user.last_name),
-            "$FIRST_NAME$": form_data.get("first_name", user.first_name),
-            "$MIDDLE_NAME$": form_data.get("middle_name", ""),
-            "$STUDENT_ID$": str(form_data.get("student_id", "")),
-            "$PHONE_NUMBER$": self._format_phone_number(
-                form_data.get("phone_number", user.phone_number)
-            ),
-            "$EMAIL_ADDRESS$": form_data.get("email", user.email),
-            "$PROGRAM_PLAN$": form_data.get("program_plan", ""),
-            "$ACADEMIC_CAREER$": form_data.get("academic_career", ""),
-            "$WITHDRAWAL_YEAR$": str(form_data.get("year", datetime.now().year)),
-            "$FALL_SELECTED$": fall_selected,
-            "$SPRING_SELECTED$": spring_selected,
-            "$SUMMER_SELECTED$": summer_selected,
-            "$CURRENT_DATE$": current_date,
-            "$UNIVERSITY_LOGO$": logo_path,
-        }
+        # Process each field in the form data
+        for field in fields:
+            field_name = field.get("name")
+            if not field_name or field_name not in form_data:
+                continue
 
-        # Handle the user's signature (if any)
-        if user.signature:
-            signature_content = self._process_signature(user)
-            replacements["$STUDENT_SIGNATURE$"] = signature_content
-        else:
-            replacements["$STUDENT_SIGNATURE$"] = ""
+            # Try different placeholder formats
+            possible_placeholders = [
+                f"${field_name.upper()}$",  # FIELD_NAME
+                f"${field_name.replace('_', '').upper()}$",  # FIELDNAME
+                f"${field_name.title().replace('_', '')}$",  # FieldName
+            ]
 
-        # Merge in checkmark replacements for the 11 petition purpose placeholders
-        replacements.update(initials_replacements)
+            field_value = form_data.get(field_name, "")
 
-        # Perform the actual replacements in the LaTeX template
-        for placeholder, value in replacements.items():
-            template_content = template_content.replace(placeholder, str(value))
-
-        # Compile to PDF
-        pdf_file = self._compile_latex(template_content)
-
-        # Optionally name the PDF
-        user_id = getattr(user, "id", "0")
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        pdf_file.name = f"term_withdrawal_user{user_id}_{timestamp}.pdf"
-
-        return pdf_file
-
-    def generate_graduate_petition(self, user, form_data):
-        template_path = os.path.join(self.template_dir, "graduate_petition.tex")
-        with open(template_path, "r") as file:
-            template_content = file.read()
-
-        # Determine which petition purpose was selected and set checkmark or square
-        all_purposes = {
-            "update_program_status": "$PURPOSE_UPDATE_PROGRAM_STATUS$",
-            "admission_status_change": "$PURPOSE_ADMISSION_STATUS_CHANGE$",
-            "add_concurrent_degree": "$PURPOSE_ADD_CONCURRENT$",
-            "change_degree_objective": "$PURPOSE_CHANGE_DEGREE_OBJECTIVE$",
-            "degree_requirements_exception": "$PURPOSE_DEGREE_REQUIREMENTS_EXCEPTION$",
-            "leave_of_absence": "$PURPOSE_LEAVE_OF_ABSENCE$",
-            "reinstate_discontinued": "$PURPOSE_REINSTATE_DISCONTINUED$",
-            "request_to_graduate": "$PURPOSE_REQUEST_TO_GRADUATE$",
-            "change_admin_term": "$PURPOSE_CHANGE_ADMIN_TERM$",
-            "early_submission": "$PURPOSE_EARLY_SUBMISSION$",
-            "other": "$PURPOSE_OTHER$",
-        }
-        selected_purpose = form_data.get("petition_purpose", "")
-        checkmark_dict = {}
-        for key, placeholder in all_purposes.items():
-            # if user-chosen purpose matches key, place a checkmark; otherwise empty square
-            checkmark_dict[placeholder] = (
-                "\\checkmark" if key == selected_purpose else "\\square"
-            )
-
-        # Format date as mm/dd/yyyy
-        current_date = datetime.now().strftime("%m/%d/%Y")
-
-        # Get user's name components
-        first_name = form_data.get("first_name", user.first_name)
-        middle_name = form_data.get("middle_name", "")
-        last_name = form_data.get("last_name", user.last_name)
-
-        # Get the logo path
-        logo_path = self.logo_path
-
-        # Main replacements for template macros
-        replacements = {
-            "$LAST_NAME$": last_name,
-            "$FIRST_NAME$": first_name,
-            "$MIDDLE_NAME$": middle_name,
-            "$STUDENT_ID$": str(form_data.get("student_id", "")),
-            "$PHONE_NUMBER$": self._format_phone_number(
-                form_data.get("phone_number", user.phone_number)
-            ),
-            "$EMAIL_ADDRESS$": form_data.get("email", user.email),
-            "$PROGRAM_PLAN$": form_data.get("program_plan", ""),
-            "$ACADEMIC_CAREER$": form_data.get("academic_career", ""),
-            "$YEAR$": str(form_data.get("year", datetime.now().year)),
-            "$SEASON$": form_data.get("season", ""),
-            "$PETITION_EXPLANATION$": form_data.get("petition_explanation", ""),
-            "$CURRENT_DATE$": current_date,
-            "$UNIVERSITY_LOGO$": logo_path,
-        }
-
-        # Handle signature
-        if user.signature:
-            signature_content = self._process_signature(user)
-            replacements["$STUDENT_SIGNATURE$"] = signature_content
-        else:
-            replacements["$STUDENT_SIGNATURE$"] = ""
-
-        # merge in all purpose checkmarks
-        replacements.update(checkmark_dict)
-
-        # perform placeholder replacements
-        for placeholder, value in replacements.items():
-            template_content = template_content.replace(placeholder, str(value))
-
-        # Create PDF using pdflatex
-        pdf_file = self._compile_latex(template_content)
-
-        # Set a custom name for the PDF
-        user_id = getattr(user, "id", "0")
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        pdf_file.name = f"graduate_petition_user{user_id}_{timestamp}.pdf"
-
-        return pdf_file
+            # Check if any of our possible placeholders exists in the template
+            for placeholder in possible_placeholders:
+                # Extract just the name without $
+                placeholder_name = placeholder[1:-1]
+                if placeholder_name in placeholders:
+                    # Handle special field types
+                    if field.get("type") == "radio" and isinstance(field_value, str):
+                        # Special handling for radio buttons, might need options from field
+                        replacements[placeholder] = field_value
+                    elif field.get("type") == "checkbox" and isinstance(
+                        field_value, bool
+                    ):
+                        # For checkboxes, use LaTeX checkmark or square
+                        replacements[placeholder] = (
+                            "\\checkmark" if field_value else "\\square"
+                        )
+                    else:
+                        # Default handling
+                        replacements[placeholder] = str(field_value)
 
     def _process_signature(self, user):
         """Process user signature for inclusion in the PDF"""
@@ -289,25 +549,52 @@ class FormPDFGenerator:
             with open(tex_file, "w") as f:
                 f.write(content)
 
-            # Run pdflatex
+            # Run pdflatex with better error handling
             try:
-                subprocess.run(
+                result = subprocess.run(
                     ["pdflatex", "-interaction=nonstopmode", tex_file],
                     cwd=temp_dir,
-                    check=True,
                     capture_output=True,
+                    text=True,  # Get output as text for easier logging
                 )
-            except subprocess.CalledProcessError as e:
-                pretty_print(f"Error compiling LaTeX: {e.stderr.decode()}", "ERROR")
-                raise
 
-            # Read the generated PDF
-            pdf_file = os.path.join(temp_dir, "document.pdf")
-            with open(pdf_file, "rb") as f:
-                pdf_content = f.read()
+                # Check if the compilation was successful
+                if result.returncode != 0:
+                    # Log detailed error output to help with debugging
+                    pretty_print(
+                        f"LaTeX compile error. Return code: {result.returncode}",
+                        "ERROR",
+                    )
+                    pretty_print(
+                        f"LaTeX stderr: {result.stderr[:500]}", "ERROR"
+                    )  # Log first 500 chars of error
 
-            # Create a ContentFile from the PDF content
-            return ContentFile(pdf_content)
+                    # Save the problematic LaTeX file for debugging if DEBUG_PDF is enabled
+                    if self.DEBUG_PDF:
+                        debug_file = os.path.join(settings.BASE_DIR, "debug_latex.tex")
+                        with open(debug_file, "w") as f:
+                            f.write(content)
+                        pretty_print(f"Saved problematic LaTeX to {debug_file}", "INFO")
+
+                    # Check if PDF was still generated despite errors
+                    pdf_file_path = os.path.join(temp_dir, "document.pdf")
+                    if not os.path.exists(pdf_file_path):
+                        pretty_print("PDF file was not generated", "ERROR")
+                        return None  # Return None instead of raising an exception
+
+                # Read the generated PDF
+                pdf_file_path = os.path.join(temp_dir, "document.pdf")
+                if os.path.exists(pdf_file_path):
+                    with open(pdf_file_path, "rb") as f:
+                        pdf_content = f.read()
+                    return ContentFile(pdf_content)
+                else:
+                    pretty_print("PDF file was not generated", "ERROR")
+                    return None
+
+            except Exception as e:
+                pretty_print(f"Exception during LaTeX compilation: {str(e)}", "ERROR")
+                return None
 
     def _format_phone_number(self, phone_number):
         """Format phone number for display"""
@@ -319,3 +606,7 @@ class FormPDFGenerator:
         if len(cleaned) == 10:
             return f"({cleaned[:3]}) {cleaned[3:6]}-{cleaned[6:]}"
         return phone_number
+
+    def _get_logo_path(self, is_dark_mode=False):
+        """Get the appropriate logo path based on theme mode"""
+        return self.logo_path

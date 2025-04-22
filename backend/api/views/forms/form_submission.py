@@ -1,20 +1,21 @@
 from django.db.models import OuterRef
-from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from utils import FormPDFGenerator, MethodNameMixin, pretty_print
 
-from ...core import IsActiveUser
-from ...models import (
+from api.core import IsActiveUser
+from api.models import (
     FormApproval,
     FormApprovalWorkflow,
     FormSubmission,
+    FormSubmissionIdentifier,
     FormTemplate,
+    OrganizationalUnit,
+    UnitApprover,
 )
-from ...serializers import FormSubmissionSerializer
+from api.serializers import FormSubmissionSerializer
 
 
 class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
@@ -24,11 +25,50 @@ class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
     queryset = FormSubmission.objects.all()
     permission_classes = [IsAuthenticated, IsActiveUser]
 
-    def perform_create(self, serializer) -> None:
-        # Set the submitter as the current user
-        serializer.save(submitter=self.request.user)
+    def get_approval_path(self):
+        """
+        Determines the approval path based on the organizational unit hierarchy
+        """
+        if not self.unit:
+            return []
 
-    @method_decorator(csrf_exempt)
+        # Get the hierarchy from unit to root
+        unit_path = self.unit.get_hierarchy_path()
+
+        # Get all approvers for each unit in the path
+        approvers = []
+        for unit in unit_path:
+            unit_approvers = UnitApprover.objects.filter(
+                unit=unit, is_active=True
+            ).select_related("user")
+
+            # Add organization-wide approvers
+            org_approvers = UnitApprover.objects.filter(
+                is_organization_wide=True, is_active=True
+            ).select_related("user")
+
+            approvers.extend(list(unit_approvers))
+            approvers.extend(list(org_approvers))
+
+        return approvers
+
+    def perform_create(self, serializer) -> None:
+        """Set the submitter as the current user and assign to their unit if available"""
+        # Try to determine the user's organizational unit
+        user = self.request.user
+        user_unit = None
+
+        # If user has an approver role, assign to their primary unit
+        if user.role in ["staff", "admin"]:
+            user_approver = UnitApprover.objects.filter(
+                user=user, is_active=True
+            ).first()
+            if user_approver:
+                user_unit = user_approver.unit
+
+        # Save with user and their unit
+        serializer.save(submitter=user, unit=user_unit)
+
     @action(detail=False, methods=["POST"])
     def preview(self, request):
         """
@@ -83,13 +123,17 @@ class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
             )
 
             if not created:
-                draft_submission.form_data = form_data
-                draft_submission.save()
+                if isinstance(form_data, dict):
+                    draft_submission.form_data = form_data
+                    draft_submission.save()
+                else:
+                    pretty_print(
+                        f"form_data is not a dict before saving: {type(form_data)}",
+                        "ERROR",
+                    )
 
             # Generate identifier for the preview/draft if it doesnt have one
             # Store the identifier in the database
-            from ...models import FormSubmissionIdentifier
-
             identifier_obj, created = FormSubmissionIdentifier.objects.get_or_create(
                 form_submission=draft_submission,
                 defaults={
@@ -141,10 +185,10 @@ class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-    @method_decorator(csrf_exempt)
     @action(detail=True, methods=["POST"])
     def submit(self, request, pk=None):
         """Submit a draft form for approval"""
+        pretty_print(f"Request in submit form {request}", "INFO")
         try:
             form_submission = self.get_object()
 
@@ -176,12 +220,14 @@ class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
 
             if not approval_workflows.exists():
                 # If no approval workflow, mark as approved immediately
+                pretty_print(
+                    "NO APPROVAL WORKFLOW FOUND MARKING AS APPROVED COULD BE A BUG, \n IN form_submissin.ViewSet.submit",
+                    "WARNING",
+                )
                 form_submission.status = "approved"
                 form_submission.save()
 
                 # create identifer record even for auto-approved forms
-                from ...models import FormSubmissionIdentifier
-
                 identifier_obj, created = (
                     FormSubmissionIdentifier.objects.get_or_create(
                         form_submission=form_submission,
@@ -203,7 +249,11 @@ class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
 
             # Set form to pending approval and set current step to first approval step
             form_submission.status = "pending"
-            form_submission.current_step = approval_workflows.first().order
+            form_submission.current_step = 1
+
+            # Set required approval count based on workflow
+            required_workflows = approval_workflows.filter(is_required=True)
+            form_submission.required_approval_count = required_workflows.count()
             form_submission.save()
 
             pretty_print(
@@ -216,7 +266,7 @@ class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
                 form_submission.form_template.name, form_submission
             )
 
-            # SAVE pdf with unique identifier as the filename
+            # BUG: static should get template name from database
             if pdf_file:
                 template_code = (
                     "withdrawal"
@@ -235,12 +285,43 @@ class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
                     "student_id": form_submission.form_data.get("student_id", ""),
                 },
             )
+
+            # If the unit is not assigned, try to determine it from form data
+            if not form_submission.unit and form_submission.form_data.get("unit"):
+                try:
+                    unit_id = int(form_submission.form_data.get("unit"))
+                    # Get unit from database - FIX: use the imported model, not a local import
+                    unit_obj = OrganizationalUnit.objects.get(id=unit_id)
+                    form_submission.unit = unit_obj
+                    form_submission.save()
+                except (ValueError, OrganizationalUnit.DoesNotExist):
+                    pass
+
+            # If still no unit, try submitter's unit
+            if not form_submission.unit:
+                # Try to assign unit based on submitter
+                user = form_submission.submitter
+                user_approver = UnitApprover.objects.filter(
+                    user=user, is_active=True
+                ).first()
+                if user_approver:
+                    form_submission.unit = user_approver.unit
+                    form_submission.save()
+
+            # Create first approval record for the appropriate approver
+            FormApproval.create_or_reassign(
+                form_submission, None, form_submission.current_step
+            )
+
             return Response(
                 {
                     "status": "pending",
-                    "current_step": form_submission.current_step,
-                    "approver_role": approval_workflows.first().approver_role,
+                    "required_approvals": form_submission.required_approval_count,
                     "identifier": identifier,
+                    "unit": form_submission.unit.id if form_submission.unit else None,
+                    "unit_name": form_submission.unit.name
+                    if form_submission.unit
+                    else None,
                 }
             )
         except Exception as e:
@@ -385,8 +466,6 @@ class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
             )
 
         try:
-            from ...models import FormSubmissionIdentifier
-
             identifier_obj = FormSubmissionIdentifier.objects.get(identifier=identifier)
             submission = identifier_obj.form_submission
 
@@ -433,7 +512,6 @@ class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
     @action(detail=False, methods=["GET"])
     def all_identifiers(self, request):
         """Retrieve all form submission identifiers for the current user"""
-        from ...models import FormSubmissionIdentifier
 
         try:
             # get all identifiers for forms submitted by current user
@@ -464,15 +542,26 @@ class FormSubmissionViewSet(viewsets.ModelViewSet, MethodNameMixin):
 
     def _validate_form_data(self, form_data, form_template) -> bool:
         """Validate form data against template schema"""
-        # Get the schema from the template
+        pretty_print(f"[VALIDATION] form_data type: {type(form_data)}", "DEBUG")
+
+        if not isinstance(form_data, dict):
+            pretty_print("[VALIDATION] form_data is not a dict", "ERROR")
+            return False
+
         schema = form_template.field_schema
 
-        # Basic validation - check that all required fields are present
         if not schema or not isinstance(schema, dict):
-            return True  # Can't validate without schema
+            pretty_print("NO SCHEMA FOR THIS FORM", "ERROR")
+            return False
 
-        for field_name, field_def in schema.items():
-            if field_def.get("required", False) and field_name not in form_data:
+        fields = schema.get("fields", [])
+        if not isinstance(fields, list):
+            pretty_print("Schema 'fields' key is not a list", "ERROR")
+            return False
+
+        for field in fields:
+            field_name = field.get("name")
+            if field.get("required", False) and field_name not in form_data:
                 pretty_print(f"Missing required field: {field_name}", "ERROR")
                 return False
 

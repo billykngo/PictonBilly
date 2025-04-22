@@ -12,6 +12,8 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import IntegrityError
 from django.forms import ValidationError
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import ensure_csrf_cookie
 from jwt.algorithms import RSAAlgorithm
 from rest_framework import status, views, viewsets
 from rest_framework.decorators import action
@@ -29,14 +31,13 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from utils import MethodNameMixin, pretty_print
 
-from ..core import AccountInactiveError, InvalidCredentialsError
-from ..models import User
-from ..serializers import LoginSerializer
+from api.core import AccountInactiveError, InvalidCredentialsError
+from api.models import User
+from api.serializers import LoginSerializer
 
 DEBUG = settings.DEBUG
 
 
-# TODO: expand to also interchangebly accept either username or email
 class LoginView(views.APIView, MethodNameMixin):
     """Handle user login with username/password"""
 
@@ -44,35 +45,42 @@ class LoginView(views.APIView, MethodNameMixin):
 
     def post(self, request):
         try:
+            personal_id = request.data.get("personalId")
+            password = request.data.get("password")
+            # in the frontend its sent as personalId but the serializer is expecting personal_id
+            request.data["personal_id"] = personal_id
+
             serializer = LoginSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
-            username = request.data.get("username")
-            password = request.data.get("password")
 
-            if not username or not password:
+            if not personal_id or not password:
                 pretty_print(
-                    f"Error Encountered from {self._get_method_name()}: Please provide both username and password",
+                    f"Error Encountered from {self._get_method_name()}: Please provide both user_id and password",
                     "ERROR",
                 )
                 raise ValidationError("Please provide both username and password")
 
-            user = authenticate(username=username, password=password)
+            # Try to find user by personal_id
+            try:
+                user_obj = User.objects.get(personal_id=personal_id)
+                user = authenticate(username=user_obj.username, password=password)
+            except User.DoesNotExist:
+                user = None
+
+            # If personal_id lookup failed, try with username as fallback
+            if not user and "@" not in personal_id:  # Not email or personal ID
+                user = authenticate(username=personal_id, password=password)
+
+            # If both failed, try with email as fallback
+            if not user and "@" in personal_id:
+                try:
+                    user_obj = User.objects.get(email=personal_id)
+                    user = authenticate(username=user_obj.username, password=password)
+                except User.DoesNotExist:
+                    pass
+
             if not user:
-                # could not validate user with username, try with email
-
-                # check if @ in input
-                if "@" in username:
-                    try:
-                        user_obj = User.objects.get(email=username)
-                        user = authenticate(
-                            username=user_obj.username, password=password
-                        )
-
-                    except User.DoesNotExist:
-                        pass
-
-            if not user:
-                # Email and username lookup failed raise Credentials Error
+                # All lookup methods failed
                 pretty_print(
                     f"Error Encountered from {self._get_method_name()}: Invalid Credentials",
                     "ERROR",
@@ -90,13 +98,13 @@ class LoginView(views.APIView, MethodNameMixin):
             login(request, user)
             request.session.save()
 
-            # TODO: use this response in the frontend to fill up dashboard
             return Response(
                 {
                     "message": "Login successful",
                     "user": {
                         "id": user.id,
                         "email": user.email,
+                        "personal_id": user.personal_id,
                         "is_superuser": user.is_superuser,
                         "firstName": user.first_name,
                         "lastName": user.last_name,
@@ -123,6 +131,7 @@ class RegisterView(views.APIView, MethodNameMixin):
         pretty_print(
             f"Received Request from {self._get_method_name()}: {data}", "DEBUG"
         )
+
         # Validate required fields
         required_fields = ["email", "username", "password", "firstName", "lastName"]
         missing_fields = []
@@ -157,12 +166,14 @@ class RegisterView(views.APIView, MethodNameMixin):
                 "ERROR",
             )
             raise ValidationError("User with this email already exists")
+
         if User.objects.filter(username=data["username"]).exists():
             pretty_print(
                 f"from {self._get_method_name()}: User with this username already exists",
                 "ERROR",
             )
             raise ValidationError("User with this username already exists")
+
         if (
             data.get("phone")
             and User.objects.filter(phone_number=data["phone"]).exists()
@@ -186,6 +197,7 @@ class RegisterView(views.APIView, MethodNameMixin):
             if data.get("phone") and User.objects.filter(phone_number=data["phone"]).exists():
                 raise ValidationError("User with this phone already exists")
 
+<<<<<<< HEAD
             # Create the user
             user = User.objects.create(
                 username=data["username"],
@@ -196,6 +208,16 @@ class RegisterView(views.APIView, MethodNameMixin):
                 phone_number=data.get("phone", ""),
                 role="student",
             )
+=======
+        return Response(
+            {
+                "message": "User registered successfully",
+                "user_id": user.id,
+                "personal_id": user.personal_id,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+>>>>>>> 8a23796bfd795e331e672763d026d5041e900984
 
             return Response(
                 {
@@ -361,6 +383,7 @@ class AzureAuthViewSet(viewsets.ViewSet, MethodNameMixin):
                     "user": {
                         "id": user.id,
                         "email": user.email,
+                        "personal_id": user.personal_id,
                         "firstName": user.first_name,
                         "lastName": user.last_name,
                         "role": user.role,
@@ -372,14 +395,9 @@ class AzureAuthViewSet(viewsets.ViewSet, MethodNameMixin):
             raise AuthenticationFailed("Invalid token format")
 
 
-from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
-
-
 class LogoutView(views.APIView):
     permission_classes = [IsAuthenticated]
 
-    @method_decorator(csrf_exempt)
     @action(detail=False, methods=["POST"])
     def post(self, request):
         try:
